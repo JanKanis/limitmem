@@ -84,25 +84,28 @@ then
 else
 	cmd_basename=$(basename "$1")
 	scopename_pattern=snap.$cmd_basename.\*
-	if [ -e /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/$scopename_pattern ]
-	then
-		echo "Error: A snap for '$cmd_basename' is already running. Running a second instance is currently not supported in $(basename "$0"). Details:"
-		systemctl --user --no-pager status -l "$scopename_pattern"
-		exit 1
-	fi
+	preexisting_scopes=$(systemctl --user list-units --type=scope --no-legend --plain "$scopename_pattern" | awk '{print $1}')
+	#echo existing scopes: $preexisting_scopes
 
 	# Start a background subshell to monitor the cgroup stats
 	(
 		get_scope() {
-			systemctl --user list-units --type=scope --no-legend --plain "$scopename_pattern" | head -1 | awk '{print $1}'
+			scopes=$(systemctl --user list-units --type=scope --no-legend --plain "$scopename_pattern" | awk '{print $1}')
+			for scope in $scopes; do
+				if ! echo "$preexisting_scopes" | grep -F -q "$scope"; then
+					echo "$scope"
+					return 0
+				fi
+			done
+			return 1
 		}
 
 		# We need to wait a moment for the snap cgroup to be started. Usually 200 ms is enough.
 		# There is a race condition here though. If the cgroup already finishes before we can
 		# start monitoring it we will miss any stats.
 		sleep 0.2;
-		# But sometimes starting the snap can take significant time, so wait some more.
 		scopename=$(get_scope)
+		# But sometimes starting the snap can take significant time, so wait some more.
 		if [ -z "$scopename" ]
 		then
 			echo sleeping some more
@@ -121,7 +124,8 @@ else
 			exit
 		fi
 		cgroup_path="/user.slice/user-1000.slice/user@1000.service/app.slice/$scopename"
-		echo scope name found: $scopename
+
+		echo systemd scope: $scopename
 
 		# Add to JCLIMITMEM fish universal variable for the jcusage script
 		fish -c "set -U JCLIMITMEM \$JCLIMITMEM \"$cmd_basename:$cgroup_path\""
@@ -166,5 +170,6 @@ else
 	wait  # Wait for background stats collection subshell to finish
 
 fi
+
 
 
