@@ -82,34 +82,50 @@ then
 			echo \"***OOM killer was triggered \$oom_kill_count times***\"
 		end" -- "$@"
 else
-	scopename=snap.`basename "$1"`.\*
-	if [ -e /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/$scopename ]
+	cmd_basename=$(basename "$1")
+	scopename_pattern=snap.$cmd_basename.\*
+	if [ -e /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/$scopename_pattern ]
 	then
-		echo "Error: A snap for '$(basename "$1")' is already running. Running a second instance is currently not supported in $(basename "$0"). Details:"
-		systemctl --user --no-pager status -l "$scopename"
+		echo "Error: A snap for '$cmd_basename' is already running. Running a second instance is currently not supported in $(basename "$0"). Details:"
+		systemctl --user --no-pager status -l "$scopename_pattern"
 		exit 1
 	fi
 
-	cgroup_path=$(fish -c "
-		set -l cgroup_path \"/user.slice/user-1000.slice/user@1000.service/app.slice/$scopename\"
-		set -U JCLIMITMEM \$JCLIMITMEM (basename \"$1\"):\$cgroup_path
-		echo \$cgroup_path")
+	# Start a background subshell to monitor the cgroup stats
 	(
+		get_scope() {
+			systemctl --user list-units --type=scope --no-legend --plain "$scopename_pattern" | head -1 | awk '{print $1}'
+		}
+
 		# We need to wait a moment for the snap cgroup to be started. Usually 200 ms is enough.
 		# There is a race condition here though. If the cgroup already finishes before we can
 		# start monitoring it we will miss any stats.
 		sleep 0.2;
 		# But sometimes starting the snap can take significant time, so wait some more.
-		if [ ! -e /sys/fs/cgroup$cgroup_path/memory.events ]
+		scopename=$(get_scope)
+		if [ -z "$scopename" ]
 		then
 			echo sleeping some more
 			sleep 1
+			scopename=$(get_scope)
 		fi
-		if [ ! -e /sys/fs/cgroup$cgroup_path/memory.events ]
+		if [ -z "$scopename" ]
 		then
 			echo sleeping some more
 			sleep 7
+			scopename=$(get_scope)
 		fi
+		if [ -z "$scopename" ]
+		then
+			echo "Error: unable to find snap cgroup, no stats available"
+			exit
+		fi
+		cgroup_path="/user.slice/user-1000.slice/user@1000.service/app.slice/$scopename"
+		echo scope name found: $scopename
+
+		# Add to JCLIMITMEM fish universal variable for the jcusage script
+		fish -c "set -U JCLIMITMEM \$JCLIMITMEM \"$cmd_basename:$cgroup_path\""
+
 		# Assume the snap has been started by now. If not, we will just exit without any stats.
 		systemctl set-property --user "$scopename" MemoryMax="$limit" MemorySwapMax="$swaplimit";
 		limitmem_msg='Cgroup exited, no stats collected'
@@ -150,4 +166,5 @@ else
 	wait  # Wait for background stats collection subshell to finish
 
 fi
+
 
