@@ -1,0 +1,146 @@
+#!/bin/sh
+
+# strict mode: error if commands fail or if unset variables are used
+set -eu
+
+limit=''
+swaplimit="1G"
+snap=0
+debug=0
+
+while true
+do
+	# parse command line args and find limits
+
+	if [ "$#" -lt 1 -o "$1" = "-h" -o "$1" = "--help" ]
+	then
+		echo Usage: `basename "$0"` "[--snap] <limit> <command>..."
+		echo or: `basename "$0"` "[--snap] <memlimit> -s <swaplimit> <command>..."
+		echo
+		echo Pass "--snap" if the command is a Snap app, which will place itself into a systemd scope
+		exit 1
+	fi
+
+	if [ "$1" = "-s" ]
+	then
+		shift
+		swaplimit="$1"
+		shift
+		continue
+	fi
+
+	if [ "$1" = "--snap" ]
+	then
+		shift
+		snap=1
+		continue
+	fi
+
+	if [ "$1" = "--debug" ]
+	then
+		shift
+		debug=1
+		continue
+	fi
+
+	if [ "$1" = -- ]
+	then
+		shift
+		break
+	fi
+
+	if [ "$limit" = "" ]
+	then
+		limit="$1"
+		shift
+		continue
+	fi
+
+	break  # Reached start of command
+done
+
+if [ "$debug" = 1 ]
+then
+	echo limit: $limit
+	echo swaplimit: $swaplimit
+	echo snap: $snap
+fi
+
+if [ "$snap" = 0 ]
+then
+	exec systemd-run --user --scope --expand-environment=no \
+			-p MemoryMax="$limit" -p MemorySwapMax="$swaplimit" fish -c "
+		set -l cgroup_path (string split -f3 -m2 : (grep 0:: /proc/self/cgroup))
+		set -U JCLIMITMEM \$JCLIMITMEM (basename \"$1\"):\$cgroup_path
+		command \$argv
+		set -l max_count (grep max /sys/fs/cgroup\$cgroup_path/memory.events | cut -f2 -d\  )
+		set -l oom_kill_count (grep oom_kill /sys/fs/cgroup\$cgroup_path/memory.events | cut -f2 -d\  )
+		if [ \$max_count != 0 ]
+			echo \"***Memory limit reached \$max_count times***\"
+		end
+		if [ \$oom_kill_count != 0 ]
+			echo \"***OOM killer was triggered \$oom_kill_count times***\"
+		end" -- "$@"
+else
+	scopename=snap.`basename "$1"`.\*
+	cgroup_path=$(fish -c "
+		set -l cgroup_path \"/user.slice/user-1000.slice/user@1000.service/app.slice/$scopename\"
+		set -U JCLIMITMEM \$JCLIMITMEM (basename \"$1\"):\$cgroup_path
+		echo \$cgroup_path")
+	(
+		# We need to wait a moment for the snap cgroup to be started. Usually 200 ms is enough.
+		# There is a race condition here though. If the cgroup already finishes before we can
+		# start monitoring it we will miss any stats.
+		sleep 0.2;
+		# But sometimes starting the snap can take significant time, so wait some more.
+		if [ ! -e /sys/fs/cgroup$cgroup_path/memory.events ]
+		then
+			echo sleeping some more
+			sleep 1
+		fi
+		if [ ! -e /sys/fs/cgroup$cgroup_path/memory.events ]
+		then
+			echo sleeping some more
+			sleep 7
+		fi
+		# Assume the snap has been started by now. If not, we will just exit without any stats.
+		systemctl set-property --user "$scopename" MemoryMax="$limit" MemorySwapMax="$swaplimit";
+		limitmem_msg='Cgroup exited, no stats collected'
+		last_print=0
+		# Ideally we would wait for the delete_self event (in addition to modify). But that isn't generated when
+		# the cgroup exits. What is generated is an open,access,close_nowrite sequence. I'm not sure what process
+		# does that or if the kernel cgroup code itself generates that, but at least it allows us to exit when the
+		# cgroup closes by also monitoring for the close event.
+		while inotifywait -qq -e modify -e delete_self -e close /sys/fs/cgroup$cgroup_path/memory.events 2>/dev/null
+		do
+			stats=$(cat /sys/fs/cgroup$cgroup_path/memory.events 2>/dev/null)
+			if [ "$stats" = "" ]
+			then
+				break
+			fi
+			#cat /sys/fs/cgroup$cgroup_path/memory.events
+			max_count=$(echo "$stats" | grep max | cut -f2 -d\  )
+			oom_kill_count=$(echo "$stats" | grep oom_kill | cut -f2 -d\  )
+			if [ $(expr "$last_print" + 2) -le $(date +%s) ]
+			then
+				date "+%d %h %H:%M:%S: Limit reached $max_count times"
+				last_print=$(date +%s)
+			fi
+			limitmem_msg=''
+			if [ "$max_count" != 0 ]
+			then
+				limitmem_msg="***Memory limit reached $max_count times***"
+			fi
+			if [ "$oom_kill_count" != 0 ]
+			then
+				limitmem_msg="$limitmem_msg\n***OOM killer was triggered $oom_kill_count times***"
+			fi
+		done
+		echo $limitmem_msg
+	)&
+	command "$@"
+	# Bug: if the systemd scope fails due to all processes being killed by the oom-killer, the scope is not deleted but transitions into a 'failed' state, where its cgroup remains without any processes. In that case the stats collection subshell keeps hanging waiting for the cgroup to exit.
+	wait  # Wait for background stats collection subshell to finish
+
+fi
+
