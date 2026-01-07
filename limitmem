@@ -83,6 +83,13 @@ then
 		end" -- "$@"
 else
 	scopename=snap.`basename "$1"`.\*
+	if [ -e /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/$scopename ]
+	then
+		echo "Error: A snap for '$(basename "$1")' is already running. Running a second instance is currently not supported in $(basename "$0"). Details:"
+		systemctl --user --no-pager status -l "$scopename"
+		exit 1
+	fi
+
 	cgroup_path=$(fish -c "
 		set -l cgroup_path \"/user.slice/user-1000.slice/user@1000.service/app.slice/$scopename\"
 		set -U JCLIMITMEM \$JCLIMITMEM (basename \"$1\"):\$cgroup_path
