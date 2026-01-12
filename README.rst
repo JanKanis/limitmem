@@ -5,7 +5,7 @@ This is a small Linux command line utility to limit memory usage of a command. I
 
 There is an additional command to get a list of all running limitmem instances and their memory usages.
 
-This script uses Fish shell's universal variables to keep track of running instances, and is meant to be used from the fish shell.
+This script uses Fish shell's universal variables to keep track of running instances but it also works from other shells if Fish shell is installed. The command to get an overview of running limitmem instances is a Fish shell command so can currently only run from fish, but it could potentially be wrapped.
 
 
 Limitations
