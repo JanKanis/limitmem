@@ -89,6 +89,9 @@ else
 
 	# Start a background subshell to monitor the cgroup stats
 	(
+		# Erroring when a command spuriously fails in a background shell is confusing, it leads to the subshell silently quitting without any messages
+		set +e
+
 		get_scope() {
 			scopes=$(systemctl --user list-units --type=scope --no-legend --plain "$scopename_pattern" | awk '{print $1}')
 			for scope in $scopes; do
@@ -130,8 +133,11 @@ else
 		# Add to JCLIMITMEM fish universal variable for the jcusage script
 		fish -c "set -U JCLIMITMEM \$JCLIMITMEM \"$cmd_basename:$cgroup_path\""
 
-		# Assume the snap has been started by now. If not, we will just exit without any stats.
-		systemctl set-property --user "$scopename" MemoryMax="$limit" MemorySwapMax="$swaplimit";
+		if ! systemctl set-property --runtime --user "$scopename" MemoryMax="$limit" MemorySwapMax="$swaplimit"
+		then
+			echo "Error: setting limits failed"
+			exit 1
+		fi
 		limitmem_msg='Cgroup exited, no stats collected'
 		last_print=0
 		# Ideally we would wait for the delete_self event (in addition to modify). But that isn't generated when
@@ -166,10 +172,5 @@ else
 		echo $limitmem_msg
 	)&
 	command "$@"
-	# Bug: if the systemd scope fails due to all processes being killed by the oom-killer, the scope is not deleted but transitions into a 'failed' state, where its cgroup remains without any processes. In that case the stats collection subshell keeps hanging waiting for the cgroup to exit.
 	wait  # Wait for background stats collection subshell to finish
-
 fi
-
-
-

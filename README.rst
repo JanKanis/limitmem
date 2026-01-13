@@ -14,3 +14,9 @@ Limitations
 Especially when running a snap, there are some limitations and race conditions where limitmem may not be able to find the right cgroup, or may hang after the target program exits. So far these are usually not a problem for me, but improvements are welcome.
 
 This program started out as a shell script, which it still is, but it would be better to reimplement it in a proper programming language like Python.
+
+
+Future
+------
+
+I hope snap will add the option to set memory and swap limits natively on all snaps. (Currently it only supports memory, and only for services, not applications.) If so we could use that directly instead of modifying the snap's cgroup directly.
