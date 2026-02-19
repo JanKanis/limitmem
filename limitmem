@@ -6,14 +6,17 @@ set -eu
 limit=''
 swaplimit="1G"
 snap=0
+snapname=''
 debug=0
 
 show_help() {
-	echo Usage: `basename "$0"` "[--snap] <limit> <command>..."
-	echo or: `basename "$0"` "[--snap] <memlimit> -s <swaplimit> <command>..."
+	echo Usage: `basename "$0"` "[--snap] [--snapname <name>] <limit> <command>..."
+	echo or: `basename "$0"` "[--snap] [--snapname <name>] <memlimit> -s <swaplimit> <command>..."
 	echo
 	echo Pass "--snap" if the command is a Snap app, which will place itself into a systemd scope
-	exit 1
+	echo or use "--snapname <name>" to explicitly name the snap name, otherwise the name of the
+	echo command will be used as default.
+	exit
 }
 
 while true
@@ -35,6 +38,15 @@ do
 	then
 		shift
 		snap=1
+		continue
+	fi
+
+	if [ "$1" = "--snapname" ]
+	then
+		snap=1
+		shift
+		snapname="$1"
+		shift
 		continue
 	fi
 
@@ -88,10 +100,11 @@ then
 		exit \$exitcode" -- "$@"
 else
 	# Handle snap
-	cmd_basename=$(basename "$1")
-	scopename_pattern=snap.$cmd_basename.\*
+	if [ -z "$snapname" ]
+	then snapname=$(basename "$1")
+	fi
+	scopename_pattern=snap.$snapname.\*
 	preexisting_scopes=$(systemctl --user list-units --type=scope --no-legend --plain "$scopename_pattern" | awk '{print $1}')
-	#echo existing scopes: $preexisting_scopes
 
 	# Start a background subshell to monitor the cgroup stats
 	(
@@ -137,7 +150,7 @@ else
 		echo systemd scope: $scopename
 
 		# Add to JCLIMITMEM fish universal variable for the jcusage script
-		fish -c "set -U JCLIMITMEM \$JCLIMITMEM \"$cmd_basename:$cgroup_path\""
+		fish -c "set -U JCLIMITMEM \$JCLIMITMEM \"$snapname:$cgroup_path\""
 
 		if ! systemctl set-property --runtime --user "$scopename" MemoryMax="$limit" MemorySwapMax="$swaplimit"
 		then
