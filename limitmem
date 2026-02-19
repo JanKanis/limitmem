@@ -70,11 +70,13 @@ fi
 
 if [ "$snap" = 0 ]
 then
+	# Run regular command in systemd scope
 	exec systemd-run --user --scope --expand-environment=no \
 			-p MemoryMax="$limit" -p MemorySwapMax="$swaplimit" fish -c "
 		set -l cgroup_path (string split -f3 -m2 : (grep 0:: /proc/self/cgroup))
 		set -U JCLIMITMEM \$JCLIMITMEM (basename \"$1\"):\$cgroup_path
 		command \$argv
+		set -l exitcode \$status
 		set -l max_count (grep max /sys/fs/cgroup\$cgroup_path/memory.events | cut -f2 -d\  )
 		set -l oom_kill_count (grep oom_kill /sys/fs/cgroup\$cgroup_path/memory.events | cut -f2 -d\  )
 		if [ \$max_count != 0 ]
@@ -82,8 +84,10 @@ then
 		end
 		if [ \$oom_kill_count != 0 ]
 			echo \"***OOM killer was triggered \$oom_kill_count times***\"
-		end" -- "$@"
+		end
+		exit \$exitcode" -- "$@"
 else
+	# Handle snap
 	cmd_basename=$(basename "$1")
 	scopename_pattern=snap.$cmd_basename.\*
 	preexisting_scopes=$(systemctl --user list-units --type=scope --no-legend --plain "$scopename_pattern" | awk '{print $1}')
@@ -113,20 +117,20 @@ else
 		# But sometimes starting the snap can take significant time, so wait some more.
 		if [ -z "$scopename" ]
 		then
-			echo sleeping some more
+			echo waiting for snap to start...
 			sleep 1
 			scopename=$(get_scope)
 		fi
 		if [ -z "$scopename" ]
 		then
-			echo sleeping some more
+			echo waiting some more...
 			sleep 7
 			scopename=$(get_scope)
 		fi
 		if [ -z "$scopename" ]
 		then
 			echo "Error: unable to find snap cgroup, no stats available"
-			exit
+			exit 1
 		fi
 		cgroup_path="/user.slice/user-1000.slice/user@1000.service/app.slice/$scopename"
 
@@ -173,6 +177,11 @@ else
 		done
 		echo $limitmem_msg
 	)&
-	command "$@"
+	exitcode=0
+	command "$@" || exitcode=$?
 	wait  # Wait for background stats collection subshell to finish
+	if [ "$exitcode" -ne 0 ]
+	then echo command exited with code $exitcode
+	fi
+	return $exitcode
 fi
